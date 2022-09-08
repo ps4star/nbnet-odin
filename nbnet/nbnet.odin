@@ -6,6 +6,8 @@ import "core:mem"
 import "core:os"
 import "core:time"
 
+TimeType :: time.Time
+
 // PORT BEGIN
 // region Declarations
 ERROR :: -1
@@ -73,17 +75,17 @@ ASSERTED_SERIALIZE :: #force_inline proc(stream: ^Stream, v, min, max: $T, val_t
 
 serialize_uint :: #force_inline proc(stream: ^Stream, v, min, max: $T)
 {
-	ASSERTED_SERIALIZE(stream, v, min, max, stream->serialize_uint_func( transmute(^uint) &(v), min, max ))
+	ASSERTED_SERIALIZE(stream, v, min, max, stream->serialize_uint_func(transmute(^uint) &(v), min, max))
 }
 
 serialize_int :: #force_inline proc(stream: ^Stream, v, min, max: $T)
 {
-	ASSERTED_SERIALIZE(stream, v, min, max, stream->serialize_int_func( &(v), min, max ))
+	ASSERTED_SERIALIZE(stream, v, min, max, stream->serialize_int_func(&v, min, max))
 }
 
 serialize_float :: #force_inline proc(stream: ^Stream, v, min, max: $T, precision: f32)
 {
-	ASSERTED_SERIALIZE(stream, v, min, max, stream->serialize_float_func( &(v), min, max, precision ))
+	ASSERTED_SERIALIZE(stream, v, min, max, stream->serialize_float_func(&v, min, max, precision))
 }
 
 serialize_bool :: #force_inline proc(stream: ^Stream, v: $T)
@@ -96,9 +98,9 @@ serialize_string :: #force_inline proc(stream: ^Stream, v: string, length: $T)
 	serialize_bytes(stream, v, length)
 }
 
-serialize_bytes :: #force_inline proc(stream: ^Stream, v, length: $T)
+serialize_bytes :: #force_inline proc(stream: ^Stream, v: $T1, length: $T2)
 {
-	stream->serialize_bytes_func( transmute([]u8) v, length )
+	stream->serialize_bytes_func(transmute([^]u8) v, uint(length))
 }
 
 serialize_padding :: #force_inline proc(stream: ^Stream)
@@ -633,9 +635,31 @@ MessageInfo :: struct {
 	sender: ^Connection,
 }
 
-Message_serialize_header :: proc(mh: ^MessageHeader, stream: ^Stream)
+Message_serialize_header :: proc(mh: ^MessageHeader, stream: ^Stream) -> (int)
 {
+  serialize_bytes(stream, &mh.id, size_of(mh.id))
+  serialize_bytes(stream, &mh.type, size_of(mh.type))
+  serialize_bytes(stream, &mh.channel_id, size_of(mh.channel_id))
 
+  return 0
+}
+
+Message_measure :: proc(msg: ^Message, m_stream: ^MeasureStream, msg_s: MessageSerializer) -> (int)
+{
+    if Message_serialize_header(&msg.header, cast(^Stream) m_stream) < 0 {
+    	return ERROR
+    }
+
+    if Message_serialize_data(msg, cast(^Stream) m_stream, msg_s) < 0 {
+    	return ERROR
+    }
+
+    return cast(int) m_stream.num_bits
+}
+
+Message_serialize_data :: proc(msg: ^Message, stream: ^Stream, msg_s: MessageSerializer) -> (int)
+{
+	return msg_s(msg.data, stream)
 }
 
 // region Encryption
@@ -735,7 +759,7 @@ PacketHeader :: struct {
 	seq_number: u16,
 	ack: u16,
 	ack_bits: u32,
-	messages_count: u8,
+	message_count: u8,
 	is_enc: u8,
 	auth_tag: [POLY1305_TAGLEN]u8,
 }
@@ -748,18 +772,215 @@ Packet :: struct {
 	size: uint,
 	sealed: bool,
 
-	w_stream: WriteStream
+	w_stream: WriteStream,
 	r_stream: ReadStream,
 	m_stream: MeasureStream,
 
 	aes_iv: [AES_BLOCKLEN]u8,
 }
 
-@private
-Packet_serialize_header :: proc(ph: ^PacketHeader, stream: ^Stream) -> (int)
+Packet_init_write :: proc(packet: ^Packet, protocol_id: u32, seq_number: u16, ack: u16, ack_bits: u32)
 {
+	packet.header.protocol_id = protocol_id
+	packet.header.message_count = 0
+	packet.header.seq_number = seq_number
+	packet.header.ack = ack
+	packet.header.ack_bits = ack_bits
+
+	packet.mode = .Write
+	packet.sender = nil
+	packet.size = 0
+	packet.sealed = false
+	packet.m_stream.num_bits = 0
+
+	WriteStream_init(&packet.w_stream, transmute([^]u8) mem.ptr_offset(&packet.buffer, PACKET_HEADER_SIZE), PACKET_MAX_USER_DATA_SIZE)
+	MeasureStream_init(&packet.m_stream)
+}
+
+Packet_init_read :: proc(packet: ^Packet, sender: ^Connection, buffer: [PACKET_MAX_SIZE]u8, size: uint) -> (int)
+{
+	packet.mode = .Read
+	packet.sender = sender
+	packet.size = size
+	packet.sealed = false
+
+	buffer := buffer
+	mem.copy(&packet.buffer, &buffer, int( size ))
+
+	header_r_stream: ReadStream
+	ReadStream_init(&header_r_stream, transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE)
+	if Packet_serialize_header(&packet.header, cast(^Stream) &header_r_stream) < 0 {
+		return ERROR
+	}
+
+	if sender.endpoint.config.is_enc_enabled && bool(packet.header.is_enc) {
+		if !bool(sender.can_decrypt) {
+			log_error("Discard encrypted packet %d", packet.header.seq_number)
+			return ERROR
+		}
+
+		Packet_compute_IV(packet, packet.sender)
+		if !Packet_check_authentication(packet, packet.sender) {
+			log_error("Authentication check failed for packet %d", packet.header.seq_number)
+			return ERROR
+		}
+
+		Packet_decrypt(packet, packet.sender)
+	}
+
+	ReadStream_init(&packet.r_stream, transmute([^]u8) mem.ptr_offset(&packet.buffer, PACKET_HEADER_SIZE), packet.size)
 	return 0
 }
+
+Packet_read_protocol_id :: proc(buffer: [PACKET_MAX_SIZE]u8, size: uint) -> (int)
+{
+	if size < PACKET_HEADER_SIZE {
+		return 0
+	}
+
+	buffer := buffer
+	r_stream: ReadStream
+	ReadStream_init(&r_stream, transmute([^]u8) &buffer, PACKET_HEADER_SIZE)
+
+	header: PacketHeader
+	if Packet_serialize_header(&header, cast(^Stream) &r_stream) < 0 {
+		return 0
+	}
+
+	return cast(int) header.protocol_id
+}
+
+Packet_write_message :: proc(packet: ^Packet, message: ^Message, msg_s: MessageSerializer) -> (PacketStatus)
+{
+	if packet.mode != .Write || packet.sealed {
+		return .Error
+	}
+
+	num_bits := int(packet.m_stream.num_bits)
+	if Message_measure(message, &packet.m_stream, msg_s) < 0 {
+		return .Error
+	}
+
+	if (packet.header.message_count >= MAX_MESSAGES_PER_PACKET ||
+		packet.m_stream.num_bits > PACKET_MAX_USER_DATA_SIZE * 8) {
+		packet.m_stream.num_bits = cast(uint) num_bits
+		return .NoSpace
+	}
+
+	if Message_serialize_header(&message.header, cast(^Stream) &packet.w_stream) < 0 {
+		return .Error
+	}
+
+	if Message_serialize_data(message, cast(^Stream) &packet.w_stream, msg_s) < 0 {
+		return .Error
+	}
+
+	packet.size = (packet.m_stream.num_bits - 1) / 8 + 1
+	packet.header.message_count += 1
+	return .Ok
+}
+
+Packet_seal :: proc(packet: ^Packet, connection: ^Connection) -> (int)
+{
+	if packet.mode != .Write {
+		return ERROR
+	}
+
+	if WriteStream_flush(&packet.w_stream) < 0 {
+		return ERROR
+	}
+
+	is_enc := bool(bool(connection.endpoint.config.is_enc_enabled) && bool(connection.can_encrypt))
+
+	packet.header.is_enc = u8( is_enc )
+	packet.size += PACKET_HEADER_SIZE
+
+	if is_enc {
+		Packet_compute_IV(packet, connection)
+		Packet_encrypt(packet, connection)
+		Packet_authenticate(packet, connection)
+	}
+
+	hdr: WriteStream
+	WriteStream_init(&hdr, transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE)
+	if Packet_serialize_header(&packet.header, cast(^Stream) &hdr) < 0 {
+		return ERROR
+	}
+
+	if WriteStream_flush(&hdr) < 0 {
+		return ERROR
+	}
+
+	packet.sealed = true
+	return 0
+}
+
+@private
+Packet_serialize_header :: proc(header: ^PacketHeader, stream: ^Stream) -> (int)
+{
+	serialize_bytes(stream, &header.protocol_id, size_of(header.protocol_id))
+	serialize_bytes(stream, &header.seq_number, size_of(header.seq_number))
+	serialize_bytes(stream, &header.ack, size_of(header.ack))
+	serialize_bytes(stream, &header.ack_bits, size_of(header.ack_bits))
+	serialize_bytes(stream, &header.message_count, size_of(header.message_count))
+	serialize_bytes(stream, &header.is_enc, size_of(header.is_enc))
+
+	if bool(header.is_enc) {
+		serialize_bytes(stream, &header.auth_tag, size_of(header.auth_tag))
+	}
+
+	return 0
+}
+
+Packet_encrypt :: proc(packet: ^Packet, connection: ^Connection)
+{
+	aes: AESCtx
+	AES_init_ctx_iv(&aes, connection.keys1.shared_key, packet.aes_iv)
+
+	bytes_to_enc := uint(packet.size - PACKET_HEADER_SIZE)
+	added_bytes := uint(0 if (bytes_to_enc % AES_BLOCKLEN == 0) else (AES_BLOCKLEN - bytes_to_enc % AES_BLOCKLEN))
+
+	bytes_to_enc += added_bytes
+
+	assert(bytes_to_enc % AES_BLOCKLEN == 0)
+	assert(bytes_to_enc < PACKET_MAX_DATA_SIZE)
+
+	packet.size = PACKET_HEADER_SIZE + bytes_to_enc
+
+	assert(packet.size < PACKET_MAX_SIZE)
+
+	mem.set(mem.ptr_offset(transmute([^]u8) &packet.buffer, packet.size - added_bytes), 0, int( added_bytes ))
+	AES_CBC_encrypt_buffer(&aes, mem.ptr_offset( transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE ), bytes_to_enc)
+
+	log_trace("Encrypted packet %d (%d bytes)", packet.header.seq_number, packet.size)
+}
+
+Packet_decrypt :: proc(packet: ^Packet, connection: ^Connection)
+{
+	aes: AESCtx
+	AES_init_ctx_iv(&aes, connection.keys1.shared_key, packet.aes_iv)
+	bytes_to_dec := uint(packet.size - PACKET_HEADER_SIZE)
+
+	assert(bytes_to_dec % AES_BLOCKLEN == 0)
+	assert(bytes_to_dec < PACKET_MAX_DATA_SIZE)
+
+	AES_CBC_decrypt_buffer(&aes, mem.ptr_offset(transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE), bytes_to_dec)
+
+	log_trace("Decrypted packet %d (%d bytes)", packet.header.seq_number, packet.size)
+}
+
+Packet_compute_IV :: proc(packet: ^Packet, connection: ^Connection)
+{
+	aes: AESCtx
+	AES_init_ctx_iv(&aes, connection.keys2.shared_key, connection.aes_iv)
+
+	mem.set(packet.aes_iv, 0, AES_BLOCKLEN)
+	mem.copy(packet.aes_iv, cast(^u8) &packet.header.seq_number, size_of(packet.header.seq_number))
+
+	AES_CBC_encrypt_buffer(&aes, packet.aes_iv, AES_BLOCKLEN)
+}
+
+
 
 // region MessageChunk
 MESSAGE_CHUNK_SIZE :: (PACKET_MAX_USER_DATA_SIZE - size_of(MessageHeader) - 2)
@@ -835,9 +1056,9 @@ ChannelType :: enum {
 	ReliableOrdered,
 }
 
-MessagesSlot :: struct {
+MessageSlot :: struct {
 	message: Message,
-	last_send_time: f64,
+	last_send_time: TimeType,
 	free: bool,
 }
 
@@ -850,7 +1071,7 @@ Channel :: struct {
 	outgoing_message_count: uint,
 	chunk_count: uint,
 	last_received_chunk_id: int,
-	time: time.Time,
+	time: TimeType,
 	write_chunk_buffer: ^u8,
 	read_chunk_buffer: ^u8,
 	write_chunk_buffer_size: uint,
@@ -900,17 +1121,127 @@ MessageEntry :: struct {
 
 PacketEntry :: struct {
 	acked: bool,
-	messages_count: uint,
-	send_time: f64,
+	message_count: uint,
+	send_time: TimeType,
 	messages: [MAX_MESSAGES_PER_PACKET]MessageEntry,
 }
 
 ConnectionStats :: struct {
-	ping: f64,
+	ping: TimeType, // TODO: may need a type change
 	packet_loss: f32,
 	upload_bandwidth: f32,
 	download_bandwidth: f32,
 }
+
+when DEBUG == YES {
+	ConnectionDebugCallback :: enum {
+		MsgAddedToRecvQueue,
+	}
+}
+
+ConnectionKeySet :: struct {
+	pub_key: [ECC_PUB_KEY_SIZE]u8,
+	prv_key: [ECC_PRV_KEY_SIZE]u8,
+	shared_key: [ECC_PUB_KEY_SIZE]u8,
+}
+
+Connection :: struct {
+	id, protocol_id: u32,
+	last_recv_packet_time, last_flush_time, last_read_packets_time: TimeType,
+	time: TimeType,
+	downloaded_bytes: uint,
+	is_accepted, is_stale, is_closed: u8, // default=1
+	endpoint: ^Endpoint,
+	channels: [MAX_CHANNELS]^Channel,
+	stats: ConnectionStats,
+	driver_data, user_data: rawptr,
+	connection_data: [CONNECTION_DATA_MAX_SIZE]u8,
+	accept_data: [ACCEPT_DATA_MAX_SIZE]u8,
+	accept_data_w_stream: WriteStream,
+	accept_data_r_stream: ReadStream,
+
+	next_packet_seq_number: u16,
+	last_received_packet_seq_number: u16,
+	packet_send_seq_buffer: [MAX_PACKET_ENTRIES]u32,
+	packet_send_buffer: [MAX_PACKET_ENTRIES]PacketEntry,
+	packet_recv_seq_buffer: [MAX_PACKET_ENTRIES]u32,
+
+	keys1, keys2, keys3: ConnectionKeySet,
+	aes_iv: [AES_BLOCKLEN]u8,
+
+	can_decrypt, can_encrypt: u8, // default=1
+}
+
+// region EventQueue
+EventType :: enum int {
+	No = 0,
+	Skip,
+}
+
+EVENT_QUEUE_CAPACITY :: 1_024
+
+Event :: struct {
+	type: EventType,
+	data: struct #raw_union { message_info: MessageInfo, connetion: ^Connection, },
+}
+
+EventQueue :: struct {
+	events: [EVENT_QUEUE_CAPACITY]Event,
+	head, tail, count: uint,
+}
+
+// region PacketSimulator
+NBN_USE_PACKET_SIMULATOR :: #config(NBN_USE_PACKET_SIMULATOR, NO)
+
+when DEBUG == YES && USE_PACKET_SIMULATOR == YES {
+	// TODO
+	// ...
+}
+
+// region Endpoint
+ENDPOINT_OUTGOING_MESSAGE_BUFFER_SIZE :: 1_024
+
+is_reserved_message :: #force_inline proc(type: $T) -> (bool)
+{
+	return (
+		type == MESSAGE_CHUNK_TYPE ||
+		type == CLIENT_CLOSED_MESSAGE_TYPE ||
+		type == CLIENT_ACCEPTED_MESSAGE_TYPE ||
+		type == BYTE_ARRAY_MESSAGE_TYPE ||
+		type == PUBLIC_CRYPTO_INFO_MESSAGE_TYPE ||
+		type == START_ENCRYPT_MESSAGE_TYPE ||
+		type == DISCONNECTION_MESSAGE_TYPE ||
+		type == CONNECTION_REQUEST_MESSAGE_TYPE
+	)
+}
+
+Endpoint :: struct {
+	config: Config,
+	channels: [MAX_CHANNELS]ChannelType,
+	message_builders: [MAX_MESSAGE_TYPES]MessageBuilder,
+	message_destructors: [MAX_MESSAGE_TYPES]MessageDestructor,
+	message_serializers: [MAX_MESSAGE_TYPES]MessageSerializer,
+	outgoing_message_buffer: [ENDPOINT_OUTGOING_MESSAGE_BUFFER_SIZE]OutgoingMessage,
+	event_queue: EventQueue,
+	is_server: bool,
+	next_ougoing_message: uint,
+}
+
+// region GameClient
+ConnectionStatus :: enum int {
+	Connected = 2,
+	Disconnected,
+	MsgReceived,
+}
+
+GameClient :: struct {
+	endpoint: Endpoint,
+	server_connection: ^Connection,
+	is_connected: bool,
+	ctx: rawptr,
+}
+
+@private gclient: GameClient
 
 // region Utils
 MIN :: linalg.min
@@ -920,9 +1251,9 @@ ABS :: linalg.abs
 // Some test/debug stuff
 @private YES :: "YES"
 @private NO :: "NO"
-@private IS_TEST :: #config(TEST, "NO")
+@private DEBUG :: #config(DEBUG, NO)
 
-when IS_TEST == YES {
+when DEBUG == YES {
 	main :: proc()
 	{
 		
