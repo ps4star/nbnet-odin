@@ -162,20 +162,20 @@ get_sbox_invert :: #force_inline proc(num: $T) -> (u8) { return rsbox[num] }
 
     // The first round key is the key itself.
     for i = 0; i < Nk; i += 1 {
-        round_key[(i * 4) + 0] = key[(i * 4) + 0];
-        round_key[(i * 4) + 1] = key[(i * 4) + 1];
-        round_key[(i * 4) + 2] = key[(i * 4) + 2];
-        round_key[(i * 4) + 3] = key[(i * 4) + 3];
+        round_key[(i * 4) + 0] = key[(i * 4) + 0]
+        round_key[(i * 4) + 1] = key[(i * 4) + 1]
+        round_key[(i * 4) + 2] = key[(i * 4) + 2]
+        round_key[(i * 4) + 3] = key[(i * 4) + 3]
     }
 
     // All other round keys are found from the previous round keys.
     for i = Nk; i < Nb * (Nr + 1); i += 1 {
         {
-            k = (i - 1) * 4;
-            tempa[0]=round_key[k + 0];
-            tempa[1]=round_key[k + 1];
-            tempa[2]=round_key[k + 2];
-            tempa[3]=round_key[k + 3];
+            k = (i - 1) * 4
+            tempa[0]=round_key[k + 0]
+            tempa[1]=round_key[k + 1]
+            tempa[2]=round_key[k + 2]
+            tempa[3]=round_key[k + 3]
 
         }
 
@@ -185,11 +185,11 @@ get_sbox_invert :: #force_inline proc(num: $T) -> (u8) { return rsbox[num] }
 
             // Function RotWord()
             {
-                u8tmp := tempa[0];
-                tempa[0] = tempa[1];
-                tempa[1] = tempa[2];
-                tempa[2] = tempa[3];
-                tempa[3] = u8tmp;
+                u8tmp := tempa[0]
+                tempa[0] = tempa[1]
+                tempa[1] = tempa[2]
+                tempa[2] = tempa[3]
+                tempa[3] = u8tmp
             }
 
             // SubWord() is a function that takes a four-byte input word and 
@@ -197,30 +197,30 @@ get_sbox_invert :: #force_inline proc(num: $T) -> (u8) { return rsbox[num] }
 
             // Function Subword()
             {
-                tempa[0] = get_sbox_value(tempa[0]);
-                tempa[1] = get_sbox_value(tempa[1]);
-                tempa[2] = get_sbox_value(tempa[2]);
-                tempa[3] = get_sbox_value(tempa[3]);
+                tempa[0] = get_sbox_value(tempa[0])
+                tempa[1] = get_sbox_value(tempa[1])
+                tempa[2] = get_sbox_value(tempa[2])
+                tempa[3] = get_sbox_value(tempa[3])
             }
 
-            tempa[0] = tempa[0] ~ Rcon[i/Nk];
+            tempa[0] = tempa[0] ~ Rcon[i/Nk]
         }
 when AES256 > -1 && AES256 == 1 {
         if i % Nk == 4 {
             // Function Subword()
             {
-                tempa[0] = get_sbox_value(tempa[0]);
-                tempa[1] = get_sbox_value(tempa[1]);
-                tempa[2] = get_sbox_value(tempa[2]);
-                tempa[3] = get_sbox_value(tempa[3]);
+                tempa[0] = get_sbox_value(tempa[0])
+                tempa[1] = get_sbox_value(tempa[1])
+                tempa[2] = get_sbox_value(tempa[2])
+                tempa[3] = get_sbox_value(tempa[3])
             }
         }
 }
         j = i * 4; k=(i - Nk) * 4;
-        round_key[j + 0] = round_key[k + 0] ~ tempa[0];
-        round_key[j + 1] = round_key[k + 1] ~ tempa[1];
-        round_key[j + 2] = round_key[k + 2] ~ tempa[2];
-        round_key[j + 3] = round_key[k + 3] ~ tempa[3];
+        round_key[j + 0] = round_key[k + 0] ~ tempa[0]
+        round_key[j + 1] = round_key[k + 1] ~ tempa[1]
+        round_key[j + 2] = round_key[k + 2] ~ tempa[2]
+        round_key[j + 3] = round_key[k + 3] ~ tempa[3]
     }
 }
 
@@ -262,27 +262,27 @@ when AES256 > -1 && AES256 == 1 {
 	temp: u8
 
 	// Rotate first row 1 columns to left  
-    temp           = (state^)[0][1];
-    (state^)[0][1] = (state^)[1][1];
-    (state^)[1][1] = (state^)[2][1];
-    (state^)[2][1] = (state^)[3][1];
-    (state^)[3][1] = temp;
+    temp           = (state^)[0][1]
+    (state^)[0][1] = (state^)[1][1]
+    (state^)[1][1] = (state^)[2][1]
+    (state^)[2][1] = (state^)[3][1]
+    (state^)[3][1] = temp
 
     // Rotate second row 2 columns to left  
-    temp           = (state^)[0][2];
-    (state^)[0][2] = (state^)[2][2];
-    (state^)[2][2] = temp;
+    temp           = (state^)[0][2]
+    (state^)[0][2] = (state^)[2][2]
+    (state^)[2][2] = temp
 
-    temp           = (state^)[1][2];
-    (state^)[1][2] = (state^)[3][2];
-    (state^)[3][2] = temp;
+    temp           = (state^)[1][2]
+    (state^)[1][2] = (state^)[3][2]
+    (state^)[3][2] = temp
 
     // Rotate third row 3 columns to left
-    temp           = (state^)[0][3];
-    (state^)[0][3] = (state^)[3][3];
-    (state^)[3][3] = (state^)[2][3];
-    (state^)[2][3] = (state^)[1][3];
-    (state^)[1][3] = temp;
+    temp           = (state^)[0][3]
+    (state^)[0][3] = (state^)[3][3]
+    (state^)[3][3] = (state^)[2][3]
+    (state^)[2][3] = (state^)[1][3]
+    (state^)[1][3] = temp
 }
 
 @private xtime :: proc(x: u8) -> (u8)
@@ -297,12 +297,12 @@ when AES256 > -1 && AES256 == 1 {
 	tmp, tm, t: u8
 
 	for i = 0; i < 4; i += 1 {
-		t   = (state^)[i][0];
-        tmp = (state^)[i][0] ~ (state^)[i][1] ~ (state^)[i][2] ~ (state^)[i][3] ;
-        tm  = (state^)[i][0] ~ (state^)[i][1] ; tm = xtime(tm);  (state^)[i][0] ~= tm ~ tmp ;
-        tm  = (state^)[i][1] ~ (state^)[i][2] ; tm = xtime(tm);  (state^)[i][1] ~= tm ~ tmp ;
-        tm  = (state^)[i][2] ~ (state^)[i][3] ; tm = xtime(tm);  (state^)[i][2] ~= tm ~ tmp ;
-        tm  = (state^)[i][3] ~ t ;              tm = xtime(tm);  (state^)[i][3] ~= tm ~ tmp ;
+		t   = (state^)[i][0]
+        tmp = (state^)[i][0] ~ (state^)[i][1] ~ (state^)[i][2] ~ (state^)[i][3] 
+        tm  = (state^)[i][0] ~ (state^)[i][1] ; tm = xtime(tm);  (state^)[i][0] ~= tm ~ tmp 
+        tm  = (state^)[i][1] ~ (state^)[i][2] ; tm = xtime(tm);  (state^)[i][1] ~= tm ~ tmp 
+        tm  = (state^)[i][2] ~ (state^)[i][3] ; tm = xtime(tm);  (state^)[i][2] ~= tm ~ tmp 
+        tm  = (state^)[i][3] ~ t ;              tm = xtime(tm);  (state^)[i][3] ~= tm ~ tmp 
 	}
 }
 
@@ -335,15 +335,15 @@ when NBN_MULTIPLY_AS_A_FUNCTION > 0 {
 	i: int
 	a, b, c, d: u8
 	for i = 0; i < 4; i += 1 {
-		a = (state^)[i][0];
-        b = (state^)[i][1];
-        c = (state^)[i][2];
-        d = (state^)[i][3];
+		a = (state^)[i][0]
+        b = (state^)[i][1]
+        c = (state^)[i][2]
+        d = (state^)[i][3]
 
-        (state^)[i][0] = Multiply(a, 0x0e) ~ Multiply(b, 0x0b) ~ Multiply(c, 0x0d) ~ Multiply(d, 0x09);
-        (state^)[i][1] = Multiply(a, 0x09) ~ Multiply(b, 0x0e) ~ Multiply(c, 0x0b) ~ Multiply(d, 0x0d);
-        (state^)[i][2] = Multiply(a, 0x0d) ~ Multiply(b, 0x09) ~ Multiply(c, 0x0e) ~ Multiply(d, 0x0b);
-        (state^)[i][3] = Multiply(a, 0x0b) ~ Multiply(b, 0x0d) ~ Multiply(c, 0x09) ~ Multiply(d, 0x0e);
+        (state^)[i][0] = Multiply(a, 0x0e) ~ Multiply(b, 0x0b) ~ Multiply(c, 0x0d) ~ Multiply(d, 0x09)
+        (state^)[i][1] = Multiply(a, 0x09) ~ Multiply(b, 0x0e) ~ Multiply(c, 0x0b) ~ Multiply(d, 0x0d)
+        (state^)[i][2] = Multiply(a, 0x0d) ~ Multiply(b, 0x09) ~ Multiply(c, 0x0e) ~ Multiply(d, 0x0b)
+        (state^)[i][3] = Multiply(a, 0x0b) ~ Multiply(b, 0x0d) ~ Multiply(c, 0x09) ~ Multiply(d, 0x0e)
 	}
 }
 
@@ -364,27 +364,27 @@ when NBN_MULTIPLY_AS_A_FUNCTION > 0 {
 	temp: u8
 
     // Rotate first row 1 columns to right  
-    temp = (state^)[3][1];
-    (state^)[3][1] = (state^)[2][1];
-    (state^)[2][1] = (state^)[1][1];
-    (state^)[1][1] = (state^)[0][1];
-    (state^)[0][1] = temp;
+    temp = (state^)[3][1]
+    (state^)[3][1] = (state^)[2][1]
+    (state^)[2][1] = (state^)[1][1]
+    (state^)[1][1] = (state^)[0][1]
+    (state^)[0][1] = temp
 
     // Rotate second row 2 columns to right 
-    temp = (state^)[0][2];
-    (state^)[0][2] = (state^)[2][2];
-    (state^)[2][2] = temp;
+    temp = (state^)[0][2]
+    (state^)[0][2] = (state^)[2][2]
+    (state^)[2][2] = temp
 
-    temp = (state^)[1][2];
-    (state^)[1][2] = (state^)[3][2];
-    (state^)[3][2] = temp;
+    temp = (state^)[1][2]
+    (state^)[1][2] = (state^)[3][2]
+    (state^)[3][2] = temp
 
     // Rotate third row 3 columns to right
-    temp = (state^)[0][3];
-    (state^)[0][3] = (state^)[1][3];
-    (state^)[1][3] = (state^)[2][3];
-    (state^)[2][3] = (state^)[3][3];
-    (state^)[3][3] = temp;
+    temp = (state^)[0][3]
+    (state^)[0][3] = (state^)[1][3]
+    (state^)[1][3] = (state^)[2][3]
+    (state^)[2][3] = (state^)[3][3]
+    (state^)[3][3] = temp
 }
 
 // Cipher is the main function that encrypts the PlainText.
@@ -535,60 +535,151 @@ poly1305_auth :: proc(out: ^[POLY1305_TAGLEN]u8, m: [^]u8, inlen: uint, key: ^[P
 
     /* full blocks */
     flag16 := !(inlen < 16)
-    flagmul := false
+    flagskiptomul := false
     for {
-        //goto poly1305_donna_atmost15bytes;
+        // 16bytes
         if flag16 {
-        	m = mem.ptr_offset(m, 16);
-		    inlen -= 16;
+        	if !flagskiptomul {
+        		m = mem.ptr_offset(m, 16)
+			    inlen -= 16
 
-		    t0 = U8TO32_LE(mem.ptr_offset(m, -16));
-		    t1 = U8TO32_LE(mem.ptr_offset(m, -12));
-		    t2 = U8TO32_LE(mem.ptr_offset(m, -8));
-		    t3 = U8TO32_LE(mem.ptr_offset(m, -4));
+			    t0 = U8TO32_LE(mem.ptr_offset(m, -16))
+			    t1 = U8TO32_LE(mem.ptr_offset(m, -12))
+			    t2 = U8TO32_LE(mem.ptr_offset(m, -8))
+			    t3 = U8TO32_LE(mem.ptr_offset(m, -4))
 
-		    h0 += t0 & 0x3ffffff;
-		    h1 += u32( ((((u64)(t1) << 32) | u64(t0)) >> 26) & 0x3ffffff )
-		    h2 += u32( ((((u64)(t2) << 32) | u64(t1)) >> 20) & 0x3ffffff )
-		    h3 += u32( ((((u64)(t3) << 32) | u64(t2)) >> 14) & 0x3ffffff )
-		    h4 += (t3 >> 8) | (1 << 24);
+			    h0 += t0 & 0x3ffffff
+			    h1 += u32( ((((u64)(t1) << 32) | u64(t0)) >> 26) & 0x3ffffff )
+			    h2 += u32( ((((u64)(t2) << 32) | u64(t1)) >> 20) & 0x3ffffff )
+			    h3 += u32( ((((u64)(t3) << 32) | u64(t2)) >> 14) & 0x3ffffff )
+			    h4 += (t3 >> 8) | (1 << 24)
+        	}
 
+		    // mul
 		    t[0] = mul32x32_64(h0, r0) + mul32x32_64(h1, s4) + mul32x32_64(h2, s3) +
-		        mul32x32_64(h3, s2) + mul32x32_64(h4, s1);
+		        mul32x32_64(h3, s2) + mul32x32_64(h4, s1)
 		    t[1] = mul32x32_64(h0, r1) + mul32x32_64(h1, r0) + mul32x32_64(h2, s4) +
-		        mul32x32_64(h3, s3) + mul32x32_64(h4, s2);
+		        mul32x32_64(h3, s3) + mul32x32_64(h4, s2)
 		    t[2] = mul32x32_64(h0, r2) + mul32x32_64(h1, r1) + mul32x32_64(h2, r0) +
-		        mul32x32_64(h3, s4) + mul32x32_64(h4, s3);
+		        mul32x32_64(h3, s4) + mul32x32_64(h4, s3)
 		    t[3] = mul32x32_64(h0, r3) + mul32x32_64(h1, r2) + mul32x32_64(h2, r1) +
-		        mul32x32_64(h3, r0) + mul32x32_64(h4, s4);
+		        mul32x32_64(h3, r0) + mul32x32_64(h4, s4)
 		    t[4] = mul32x32_64(h0, r4) + mul32x32_64(h1, r3) + mul32x32_64(h2, r2) +
-		        mul32x32_64(h3, r1) + mul32x32_64(h4, r0);
+		        mul32x32_64(h3, r1) + mul32x32_64(h4, r0)
 
-		    h0 = (u32)(t[0]) & 0x3ffffff;
-		    c = (t[0] >> 26);
-		    t[1] += c;
+		    h0 = (u32)(t[0]) & 0x3ffffff
+		    c = (t[0] >> 26)
+		    t[1] += c
 
-		    h1 = (u32)(t[1]) & 0x3ffffff;
-		    b = (u32)(t[1] >> 26);
-		    t[2] += u64(b);
+		    h1 = (u32)(t[1]) & 0x3ffffff
+		    b = (u32)(t[1] >> 26)
+		    t[2] += u64(b)
 
-		    h2 = (u32)(t[2]) & 0x3ffffff;
-		    b = (u32)(t[2] >> 26);
-		    t[3] += u64(b);
+		    h2 = (u32)(t[2]) & 0x3ffffff
+		    b = (u32)(t[2] >> 26)
+		    t[3] += u64(b)
 
-		    h3 = (u32)(t[3]) & 0x3ffffff;
-		    b = (u32)(t[3] >> 26);
-		    t[4] += u64(b);
+		    h3 = (u32)(t[3]) & 0x3ffffff
+		    b = (u32)(t[3] >> 26)
+		    t[4] += u64(b)
 
-		    h4 = (u32)(t[4]) & 0x3ffffff;
-		    b = (u32)(t[4] >> 26);
-		    h0 += b * 5;
+		    h4 = (u32)(t[4]) & 0x3ffffff
+		    b = (u32)(t[4] >> 26)
+		    h0 += b * 5
 
 		    if (inlen >= 16) {
-		        //goto poly1305_donna_16bytes;
+		    	flagskiptomul = false
+		        flag16 = true
+		        continue
 		    }
         }
+
+        // atmost15
+        if !bool(inlen) {
+        	break
+        }
+
+	    for j = 0; j < inlen; j += 1 {
+	        mp[j] = m[j]
+	    }
+
+	    j += 1; mp[j] = 1
+	    for ; j < 16; j += 1 {
+	        mp[j] = 0
+	    }
+	    inlen = 0
+
+	    t0 = U8TO32_LE(DEMOTE(&mp, 0))
+	    t1 = U8TO32_LE(DEMOTE(&mp, 4))
+	    t2 = U8TO32_LE(DEMOTE(&mp, 8))
+	    t3 = U8TO32_LE(DEMOTE(&mp, 12))
+
+	    h0 += t0 & 0x3ffffff
+	    h1 += u32( ((((u64)(t1) << 32) | u64(t0)) >> 26) & 0x3ffffff )
+	    h2 += u32( ((((u64)(t2) << 32) | u64(t1)) >> 20) & 0x3ffffff )
+	    h3 += u32( ((((u64)(t3) << 32) | u64(t2)) >> 14) & 0x3ffffff )
+	    h4 += (t3 >> 8)
+
+	    // goto poly1305_donna_mul;
+	    flagskiptomul = true
+	    flag16 = true
+	    continue
     }
+
+    // finish
+    b = h0 >> 26
+    h0 = h0 & 0x3ffffff
+    h1 += b
+    b = h1 >> 26
+    h1 = h1 & 0x3ffffff
+    h2 += b
+    b = h2 >> 26
+    h2 = h2 & 0x3ffffff
+    h3 += b
+    b = h3 >> 26
+    h3 = h3 & 0x3ffffff
+    h4 += b
+    b = h4 >> 26
+    h4 = h4 & 0x3ffffff
+    h0 += b * 5
+    b = h0 >> 26
+    h0 = h0 & 0x3ffffff
+    h1 += b
+
+    g0 = h0 + 5
+    b = g0 >> 26
+    g0 &= 0x3ffffff
+    g1 = h1 + b
+    b = g1 >> 26
+    g1 &= 0x3ffffff
+    g2 = h2 + b
+    b = g2 >> 26
+    g2 &= 0x3ffffff
+    g3 = h3 + b
+    b = g3 >> 26
+    g3 &= 0x3ffffff
+    g4 = h4 + b - (1 << 26)
+
+    b = (g4 >> 31) - 1
+    nb = ~b
+    h0 = (h0 & nb) | (g0 & b)
+    h1 = (h1 & nb) | (g1 & b)
+    h2 = (h2 & nb) | (g2 & b)
+    h3 = (h3 & nb) | (g3 & b)
+    h4 = (h4 & nb) | (g4 & b)
+
+    f0 = u64((h0) | (h1 << 26)) + (u64)(U8TO32_LE(&key[16]))
+    f1 = u64((h1 >> 6) | (h2 << 20)) + (u64)(U8TO32_LE(&key[20]))
+    f2 = u64((h2 >> 12) | (h3 << 14)) + (u64)(U8TO32_LE(&key[24]))
+    f3 = u64((h3 >> 18) | (h4 << 8)) + (u64)(U8TO32_LE(&key[28]))
+
+    U32TO8_LE(&out[0], u32(f0))
+    f1 += (f0 >> 32)
+    U32TO8_LE(&out[4], u32(f1))
+    f2 += (f1 >> 32)
+    U32TO8_LE(&out[8], u32(f2))
+    f3 += (f2 >> 32)
+    U32TO8_LE(&out[12], u32(f3))
 }
 
 /*

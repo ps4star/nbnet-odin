@@ -924,6 +924,13 @@ Message_serialize_data :: proc(msg: ^Message, stream: ^Stream, msg_s: MessageSer
 
 
 
+
+
+
+
+
+
+
 // region Packet
 // <see packet.odin>
 
