@@ -45,30 +45,42 @@ DEMOTE :: #force_inline proc(arr: ^[$N]$T, idx: int = 0) -> ([^]T)
 // PORT BEGIN
 // (no region set)
 allocator :: mem.alloc
-reallocator :: #force_inline proc(ptr: rawptr, size: int, old_size := 1)
+reallocator :: #force_inline proc(ptr: rawptr, size: int, old_size := 1) -> (rawptr)
 {
-	mem.resize(ptr, old_size, size)
+	return mem.resize(ptr, old_size, size)
 }
 deallocator :: mem.free
 
 // region Declarations
-abort :: proc()
+abort :: #force_inline proc(loc := #caller_location)
 {
-
+	fmt.println("abort() call; location info: ", loc)
+	panic(fmt.aprintf("Now exiting..."))
 }
 
 ERROR :: -1
 
-ConnectionVector :: struct {
-	connections: [dynamic]Connection,
-	//count, capacity: uint,
-}
+NBN_DEBUG :: cast(int) #config(NBN_DEBUG, -1)
+NBN_DISABLE_MEMORY_POOLING :: cast(int) #config(NBN_DISABLE_MEMORY_POOLING, -1)
 
-// region MemoryManagement
-MemType :: enum {
-	MsgChunk,
-	ByteArrayMsg,
-	Connection,
+// region ConnectionVector
+// NOTE: this type has been replaced with [dynamic]Connection
+// uses of this type later in the code have been changed appropriately
+
+// region Memory management
+when NBN_DEBUG > -1 && NBN_USE_PACKET_SIMULATOR > -1 {
+	MemType :: enum {
+		MESSAGE_CHUNK,
+		BYTE_ARRAY_MESSAGE,
+		CONNECTION,
+		PACKET_SIMULATOR_ENTRY,
+	}
+} else {
+	MemType :: enum {
+		MESSAGE_CHUNK,
+		BYTE_ARRAY_MESSAGE,
+		CONNECTION,
+	}
 }
 
 MemPoolFreeBlock :: struct {
@@ -76,15 +88,183 @@ MemPoolFreeBlock :: struct {
 }
 
 MemPool :: struct {
-	blocks: [^]^u8,
+	blocks: [^][^]u8,
 	block_size: uint,
 	block_count: uint,
 	block_idx: uint,
 	free: ^MemPoolFreeBlock,
 }
 
-MemoryManager :: struct {
-	mem_pools: [16]MemPool,
+when NBN_DISABLE_MEMORY_POOLING > -1 {
+	MemoryManager :: struct {
+		mem_sizes: [MemType]uint,
+	}
+} else {
+	MemoryManager :: struct {
+		mem_pools: [MemType]MemPool,
+	}
+}
+
+@private mem_mgr: MemoryManager
+
+@private MemoryManager_init :: proc()
+{
+	when NBN_DISABLE_MEMORY_POOLING > -1 {
+		log(.Debug, "MemoryManager_init without pooling!")
+
+		mem_mgr.mem_sizes[.MESSAGE_CHUNK] = size_of(MessageChunk)
+		mem_mgr.mem_sizes[.BYTE_ARRAY_MESSAGE] = size_of(ByteArrayMessage)
+		mem_mgr.mem_sizes[.CONNECTION] = size_of(Connection)
+
+		when NBN_DEBUG > -1 && NBN_USE_PACKET_SIMULATOR > -1 {
+			mem_mgr.mem_sizes[.PACKET_SIMULATOR_ENTRY] = size_of(PacketSimulatorEntry)
+		}
+	} else {
+		log(.Debug, "MemoryManager_init with pooling!")
+
+		// NOTE(ps4star): Shouldn't these ints be constants or smth?
+		MemPool_init(&mem_mgr.mem_pools[.MESSAGE_CHUNK], size_of(MessageChunk), 256)
+		MemPool_init(&mem_mgr.mem_pools[.BYTE_ARRAY_MESSAGE], size_of(ByteArrayMessage), 256)
+		MemPool_init(&mem_mgr.mem_pools[.CONNECTION], size_of(Connection), 16)
+
+		when NBN_DEBUG > -1 && NBN_USE_PACKET_SIMULATOR > -1 {
+			MemPool_init(&mem_mgr.mem_pools[.PACKET_SIMULATOR_ENTRY], size_of(PacketSimulatorEntry), 32)
+		}
+	}
+}
+
+@private MemoryManager_deinit :: proc()
+{
+	when !(NBN_DISABLE_MEMORY_POOLING > -1) {
+		MemPool_deinit(&mem_mgr.mem_pools[.MESSAGE_CHUNK])
+		MemPool_deinit(&mem_mgr.mem_pools[.BYTE_ARRAY_MESSAGE])
+		MemPool_deinit(&mem_mgr.mem_pools[.CONNECTION])
+
+		when NBN_DEBUG > -1 && NBN_USE_PACKET_SIMULATOR > -1 {
+			MemPool_deinit(&mem_mgr.mem_pools[.PACKET_SIMULATOR_ENTRY])
+		}
+	}
+}
+
+@private MemoryManager_alloc :: proc(mem_type: MemType) -> (rawptr)
+{
+	when NBN_DISABLE_MEMORY_POOLING > -1 {
+		return allocator(mem_mgr.mem_sizes[mem_type])
+	} else {
+		return MemPool_alloc(&mem_mgr.mem_pools[mem_type])
+	}
+}
+
+@private MemoryManager_dealloc :: proc(ptr: rawptr, mem_type: MemType)
+{
+	when NBN_DISABLE_MEMORY_POOLING > -1 {
+		deallocator(ptr)
+	} else {
+		MemPool_dealloc(&mem_mgr.mem_pools[mem_type], ptr)
+	}
+}
+
+when !(NBN_DISABLE_MEMORY_POOLING > -1) {
+
+@private MemPool_init :: proc(pool: ^MemPool, block_size: uint, initial_block_count: uint)
+{
+	pool.block_size = MAX(block_size, size_of(MemPoolFreeBlock))
+	pool.block_idx = 0
+	pool.block_count = 0
+	pool.free = nil
+	pool.blocks = nil
+
+	MemPool_grow(pool, initial_block_count)
+}
+
+/*static void MemPool_Deinit(NBN_MemPool *pool)
+{
+    for (unsigned int i = 0; i < pool->block_count; i++)
+        NBN_Deallocator(pool->blocks[i]);
+
+    NBN_Deallocator(pool->blocks);
+}*/
+MemPool_deinit :: proc(pool: ^MemPool)
+{
+	for i: uint = 0; i < uint(pool.block_count); i += 1 {
+		deallocator(pool.blocks[i])
+	}
+
+	deallocator(pool.blocks)
+}
+
+/*static void *MemPool_Alloc(NBN_MemPool *pool)
+{
+    if (pool->free)
+    {
+        void *block = pool->free;
+
+        pool->free = pool->free->next;
+
+        return block;
+    }
+
+    if (pool->block_idx == pool->block_count)
+        MemPool_Grow(pool, pool->block_count * 2);
+
+    void *block = pool->blocks[pool->block_idx];
+
+    pool->block_idx++;
+
+    return block;
+}*/
+MemPool_alloc :: proc(pool: ^MemPool) -> (rawptr)
+{
+	if pool.free != nil {
+		block: rawptr = pool.free
+		pool.free = pool.free.next
+		return block
+	}
+
+	if pool.block_idx == pool.block_count {
+		MemPool_grow(pool, pool.block_count * 2)
+	}
+
+	block: rawptr = pool.blocks[pool.block_idx]
+	pool.block_idx += 1
+	return block
+}
+
+/*static void MemPool_Dealloc(NBN_MemPool *pool, void *ptr)
+{
+    NBN_MemPoolFreeBlock *free = pool->free;
+
+    pool->free = (NBN_MemPoolFreeBlock*)ptr;
+    pool->free->next = free;
+}*/
+MemPool_dealloc :: proc(pool: ^MemPool, ptr: rawptr)
+{
+	fr: ^MemPoolFreeBlock = pool.free
+
+	pool.free = transmute(^MemPoolFreeBlock) ptr
+	pool.free.next = fr
+}
+
+/*static void MemPool_Grow(NBN_MemPool *pool, unsigned int block_count)
+{
+    pool->blocks = (uint8_t**)NBN_Reallocator(pool->blocks, sizeof(uint8_t *) * block_count);
+
+    for (unsigned int i = 0; i < block_count - pool->block_count; i++)
+        pool->blocks[pool->block_idx + i] = (uint8_t*)NBN_Allocator(pool->block_size);
+
+    pool->block_count = block_count;
+}*/
+MemPool_grow :: proc(pool: ^MemPool, block_count: uint)
+{
+	pool.blocks = transmute(type_of(pool.blocks)) reallocator(pool.blocks, int(size_of([^]u8) * block_count))
+
+	for i: uint = 0; i < block_count - pool.block_count; i += 1 {
+		pool.blocks[pool.block_idx + i] = transmute([^]u8) allocator(int(pool.block_size))
+	}
+
+	pool.block_count = block_count
+}
+
 }
 
 // region Serialization
@@ -146,6 +326,7 @@ serialize_string :: #force_inline proc(stream: ^Stream, v: string, length: $T)
 }
 
 serialize_bytes :: #force_inline proc(stream: ^Stream, v: $T1, length: $T2)
+	where size_of(T1) == size_of([^]u8)
 {
 	stream->serialize_bytes_func(transmute([^]u8) v, uint(length))
 }
@@ -153,6 +334,24 @@ serialize_bytes :: #force_inline proc(stream: ^Stream, v: $T1, length: $T2)
 serialize_padding :: #force_inline proc(stream: ^Stream)
 {
 	stream->serialize_padding_func()
+}
+
+get_required_number_of_bits_for :: proc(v: uint) -> (uint)
+{
+	a: uint = v | (v >> 1)
+    b: uint = a | (a >> 2)
+    c: uint = b | (b >> 4)
+    d: uint = c | (c >> 8)
+    e: uint = d | (d >> 16)
+    f: uint = e >> 1
+
+    i: uint = f - ((f >> 1) & 0x55555555)
+    j: uint = (((i >> 2) & 0x33333333) + (i & 0x33333333))
+    k: uint = (((j >> 4) + j) & 0x0f0f0f0f)
+    l: uint = k + (k >> 8)
+    m: uint = l + (l >> 16)
+
+    return (m & 0x0000003f) + 1
 }
 
 // region BitReader
@@ -710,340 +909,23 @@ Message_serialize_data :: proc(msg: ^Message, stream: ^Stream, msg_s: MessageSer
 }
 
 // region Encryption
-// region ECDH
-NIST_B163 :: 1
-NIST_K163 :: 2
-NIST_B233 :: 3
-NIST_K233 :: 4
-NIST_B283 :: 5
-NIST_K283 :: 6
-NIST_B409 :: 7
-NIST_K409 :: 8
-NIST_B571 :: 9
-NIST_K571 :: 10
+// <see crypto.odin>
 
-ECC_CURVE :: NIST_B233
 
-when (ECC_CURVE > -1 && ECC_CURVE != 0) {
-	when (ECC_CURVE == NIST_K163) || (ECC_CURVE == NIST_B163) {
-		CURVE_DEGREE 		:: 163
-		ECC_PRV_KEY_SIZE 	:: 24
-	} else when (ECC_CURVE == NIST_K233) || (ECC_CURVE == NIST_B233) {
-		CURVE_DEGREE		:: 233
-		ECC_PRV_KEY_SIZE	:: 32
-	} else when (ECC_CURVE == NIST_K283) || (ECC_CURVE == NIST_B283) {
-		CURVE_DEGREE		:: 283
-		ECC_PRV_KEY_SIZE	:: 36
-	} else when (ECC_CURVE == NIST_K409) || (ECC_CURVE == NIST_B409) {
-		CURVE_DEGREE		:: 409
-		ECC_PRV_KEY_SIZE	:: 52
-	} else when (ECC_CURVE == NIST_K571) || (ECC_CURVE == NIST_B571) {
-		CURVE_DEGREE		:: 571
-		ECC_PRV_KEY_SIZE	:: 72
-	}
-} else {
-	#panic("Must define a curve to use.")
-}
 
-ECC_PUB_KEY_SIZE :: (2 * ECC_PRV_KEY_SIZE)
 
-// region AES
-AES128 :: 1
-AES192 :: #config(AES192, -1)
-AES256 :: #config(AES256, -1)
 
-AES_BLOCKLEN :: 16
 
-when (AES256 > -1 && AES256 == 1) {
-    AES_KEYLEN		:: 32
-    AES_keyExpSize	:: 240
-} else when (AES192 > -1 && AES192 == 1) {
-    AES_KEYLEN		:: 24
-    AES_keyExpSize	:: 208
-} else {
-    AES_KEYLEN		:: 16   // Key length in bytes
-    AES_keyExpSize	:: 176
-}
 
-AESCtx :: struct {
-	round_key: [AES_keyExpSize]u8,
-	iv: [AES_BLOCKLEN]u8,
-}
 
-// region Poly1305
-POLY1305_KEYLEN :: 32
-POLY1305_TAGLEN :: 16
 
-// region PRNG
-CSPRNG :: rawptr
 
-CSPRNG_TYPE :: struct #raw_union {
-	object: CSPRNG,
-	urandom: FileT, // *FILE
-}
+
+
+
 
 // region Packet
-PACKET_MAX_SIZE :: 1_024
-MAX_MESSAGES_PER_PACKET :: 255
-
-PACKET_HEADER_SIZE :: size_of(PacketHeader)
-PACKET_MAX_DATA_SIZE :: (PACKET_MAX_SIZE - PACKET_HEADER_SIZE)
-
-PACKET_MAX_USER_DATA_SIZE :: (PACKET_MAX_DATA_SIZE - AES_BLOCKLEN)
-
-PacketStatus :: enum {
-	Error = -1,
-	Ok,
-	NoSpace,
-}
-
-PacketMode :: enum {
-	Write = 1,
-	Read,
-}
-
-PacketHeader :: struct {
-	protocol_id: u32,
-	seq_number: u16,
-	ack: u16,
-	ack_bits: u32,
-	message_count: u8,
-	is_enc: u8,
-	auth_tag: [POLY1305_TAGLEN]u8,
-}
-
-Packet :: struct {
-	header: PacketHeader,
-	mode: PacketMode,
-	sender: ^Connection,
-	buffer: [PACKET_MAX_SIZE]u8,
-	size: uint,
-	sealed: bool,
-
-	w_stream: WriteStream,
-	r_stream: ReadStream,
-	m_stream: MeasureStream,
-
-	aes_iv: [AES_BLOCKLEN]u8,
-}
-
-Packet_init_write :: proc(packet: ^Packet, protocol_id: u32, seq_number: u16, ack: u16, ack_bits: u32)
-{
-	packet.header.protocol_id = protocol_id
-	packet.header.message_count = 0
-	packet.header.seq_number = seq_number
-	packet.header.ack = ack
-	packet.header.ack_bits = ack_bits
-
-	packet.mode = .Write
-	packet.sender = nil
-	packet.size = 0
-	packet.sealed = false
-	packet.m_stream.num_bits = 0
-
-	WriteStream_init(&packet.w_stream, transmute([^]u8) mem.ptr_offset(&packet.buffer, PACKET_HEADER_SIZE), PACKET_MAX_USER_DATA_SIZE)
-	MeasureStream_init(&packet.m_stream)
-}
-
-Packet_init_read :: proc(packet: ^Packet, sender: ^Connection, buffer: [PACKET_MAX_SIZE]u8, size: uint) -> (int)
-{
-	packet.mode = .Read
-	packet.sender = sender
-	packet.size = size
-	packet.sealed = false
-
-	buffer := buffer
-	mem.copy(&packet.buffer, &buffer, int( size ))
-
-	header_r_stream: ReadStream
-	ReadStream_init(&header_r_stream, transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE)
-	if Packet_serialize_header(&packet.header, cast(^Stream) &header_r_stream) < 0 {
-		return ERROR
-	}
-
-	if sender.endpoint.config.is_enc_enabled && bool(packet.header.is_enc) {
-		if !bool(sender.can_decrypt) {
-			log(.Error, "Discard encrypted packet %d", packet.header.seq_number)
-			return ERROR
-		}
-
-		Packet_compute_IV(packet, packet.sender)
-		if !Packet_check_authentication(packet, packet.sender) {
-			log(.Error, "Authentication check failed for packet %d", packet.header.seq_number)
-			return ERROR
-		}
-
-		Packet_decrypt(packet, packet.sender)
-	}
-
-	ReadStream_init(&packet.r_stream, transmute([^]u8) mem.ptr_offset(&packet.buffer, PACKET_HEADER_SIZE), packet.size)
-	return 0
-}
-
-Packet_read_protocol_id :: proc(buffer: [PACKET_MAX_SIZE]u8, size: uint) -> (int)
-{
-	if size < PACKET_HEADER_SIZE {
-		return 0
-	}
-
-	buffer := buffer
-	r_stream: ReadStream
-	ReadStream_init(&r_stream, transmute([^]u8) &buffer, PACKET_HEADER_SIZE)
-
-	header: PacketHeader
-	if Packet_serialize_header(&header, cast(^Stream) &r_stream) < 0 {
-		return 0
-	}
-
-	return cast(int) header.protocol_id
-}
-
-Packet_write_message :: proc(packet: ^Packet, message: ^Message, msg_s: MessageSerializer) -> (PacketStatus)
-{
-	if packet.mode != .Write || packet.sealed {
-		return .Error
-	}
-
-	num_bits := int(packet.m_stream.num_bits)
-	if Message_measure(message, &packet.m_stream, msg_s) < 0 {
-		return .Error
-	}
-
-	if (packet.header.message_count >= MAX_MESSAGES_PER_PACKET ||
-		packet.m_stream.num_bits > PACKET_MAX_USER_DATA_SIZE * 8) {
-		packet.m_stream.num_bits = cast(uint) num_bits
-		return .NoSpace
-	}
-
-	if Message_serialize_header(&message.header, cast(^Stream) &packet.w_stream) < 0 {
-		return .Error
-	}
-
-	if Message_serialize_data(message, cast(^Stream) &packet.w_stream, msg_s) < 0 {
-		return .Error
-	}
-
-	packet.size = (packet.m_stream.num_bits - 1) / 8 + 1
-	packet.header.message_count += 1
-	return .Ok
-}
-
-Packet_seal :: proc(packet: ^Packet, connection: ^Connection) -> (int)
-{
-	if packet.mode != .Write {
-		return ERROR
-	}
-
-	if WriteStream_flush(&packet.w_stream) < 0 {
-		return ERROR
-	}
-
-	is_enc := bool(bool(connection.endpoint.config.is_enc_enabled) && bool(connection.can_encrypt))
-
-	packet.header.is_enc = u8( is_enc )
-	packet.size += PACKET_HEADER_SIZE
-
-	if is_enc {
-		Packet_compute_IV(packet, connection)
-		Packet_encrypt(packet, connection)
-		Packet_authenticate(packet, connection)
-	}
-
-	hdr: WriteStream
-	WriteStream_init(&hdr, transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE)
-	if Packet_serialize_header(&packet.header, cast(^Stream) &hdr) < 0 {
-		return ERROR
-	}
-
-	if WriteStream_flush(&hdr) < 0 {
-		return ERROR
-	}
-
-	packet.sealed = true
-	return 0
-}
-
-@private
-Packet_serialize_header :: proc(header: ^PacketHeader, stream: ^Stream) -> (int)
-{
-	serialize_bytes(stream, &header.protocol_id, size_of(header.protocol_id))
-	serialize_bytes(stream, &header.seq_number, size_of(header.seq_number))
-	serialize_bytes(stream, &header.ack, size_of(header.ack))
-	serialize_bytes(stream, &header.ack_bits, size_of(header.ack_bits))
-	serialize_bytes(stream, &header.message_count, size_of(header.message_count))
-	serialize_bytes(stream, &header.is_enc, size_of(header.is_enc))
-
-	if bool(header.is_enc) {
-		serialize_bytes(stream, &header.auth_tag, size_of(header.auth_tag))
-	}
-
-	return 0
-}
-
-Packet_encrypt :: proc(packet: ^Packet, connection: ^Connection)
-{
-	aes: AESCtx
-	AES_init_ctx_iv(&aes, connection.keys1.shared_key, packet.aes_iv)
-
-	bytes_to_enc := uint(packet.size - PACKET_HEADER_SIZE)
-	added_bytes := uint(0 if (bytes_to_enc % AES_BLOCKLEN == 0) else (AES_BLOCKLEN - bytes_to_enc % AES_BLOCKLEN))
-
-	bytes_to_enc += added_bytes
-
-	assert(bytes_to_enc % AES_BLOCKLEN == 0)
-	assert(bytes_to_enc < PACKET_MAX_DATA_SIZE)
-
-	packet.size = PACKET_HEADER_SIZE + bytes_to_enc
-
-	assert(packet.size < PACKET_MAX_SIZE)
-
-	mem.set(mem.ptr_offset(transmute([^]u8) &packet.buffer, packet.size - added_bytes), 0, int( added_bytes ))
-	AES_CBC_encrypt_buffer(&aes, mem.ptr_offset( transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE ), bytes_to_enc)
-
-	log(.Trace, "Encrypted packet %d (%d bytes)", packet.header.seq_number, packet.size)
-}
-
-Packet_decrypt :: proc(packet: ^Packet, connection: ^Connection)
-{
-	aes: AESCtx
-	AES_init_ctx_iv(&aes, connection.keys1.shared_key, packet.aes_iv)
-	bytes_to_dec := uint(packet.size - PACKET_HEADER_SIZE)
-
-	assert(bytes_to_dec % AES_BLOCKLEN == 0)
-	assert(bytes_to_dec < PACKET_MAX_DATA_SIZE)
-
-	AES_CBC_decrypt_buffer(&aes, mem.ptr_offset(transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE), bytes_to_dec)
-
-	log(.Trace, "Decrypted packet %d (%d bytes)", packet.header.seq_number, packet.size)
-}
-
-Packet_compute_IV :: proc(packet: ^Packet, connection: ^Connection)
-{
-	aes: AESCtx
-	AES_init_ctx_iv(&aes, connection.keys2.shared_key, connection.aes_iv)
-
-	mem.set(DEMOTE(&packet.aes_iv), 0, AES_BLOCKLEN)
-	mem.copy(DEMOTE(&packet.aes_iv), cast(^u8) &packet.header.seq_number, size_of(packet.header.seq_number))
-
-	AES_CBC_encrypt_buffer(&aes, packet.aes_iv, AES_BLOCKLEN)
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// <see packet.odin>
 
 // region MessageChunk
 MESSAGE_CHUNK_SIZE :: (PACKET_MAX_USER_DATA_SIZE - size_of(MessageHeader) - 2)
@@ -1054,6 +936,29 @@ MessageChunk :: struct {
 	total: u8,
 	data: [MESSAGE_CHUNK_SIZE]u8,
 	outgoing_msg: ^OutgoingMessage,
+}
+
+MessageChunk_create :: proc() -> (^MessageChunk)
+{
+	chunk := transmute(^MessageChunk) MemoryManager_alloc(.MESSAGE_CHUNK)
+
+	chunk.outgoing_msg = nil
+
+	return chunk
+}
+
+MessageChunk_destroy :: proc(chunk: ^MessageChunk)
+{
+	MemoryManager_dealloc(chunk, .MESSAGE_CHUNK)
+}
+
+MessageChunk_serialize :: proc(msg: ^MessageChunk, stream: ^Stream) -> (int)
+{
+	serialize_bytes(stream, &msg.id, 1)
+	serialize_bytes(stream, &msg.total, 1)
+	serialize_bytes(stream, DEMOTE(&msg.data), MESSAGE_CHUNK_SIZE)
+
+	return 0
 }
 
 // region ClientClosedMessage
@@ -1196,7 +1101,7 @@ ConnectionStats :: struct {
 	download_bandwidth: f32,
 }
 
-when DEBUG == YES {
+when NBN_DEBUG > -1 {
 	ConnectionDebugCallback :: enum {
 		MsgAddedToRecvQueue,
 	}
@@ -1256,7 +1161,7 @@ EventQueue :: struct {
 // region PacketSimulator
 NBN_USE_PACKET_SIMULATOR :: #config(NBN_USE_PACKET_SIMULATOR, -1)
 
-when DEBUG == YES && NBN_USE_PACKET_SIMULATOR > -1 {
+when NBN_DEBUG > -1 && NBN_USE_PACKET_SIMULATOR > -1 {
 	// TODO
 	// ...
 }
@@ -1291,20 +1196,10 @@ Endpoint :: struct {
 }
 
 // region GameClient
-ConnectionStatus :: enum int {
-	Connected = 2,
-	Disconnected,
-	MsgReceived,
-}
+// <in game_client.odin>
 
-GameClient :: struct {
-	endpoint: Endpoint,
-	server_connection: ^Connection,
-	is_connected: bool,
-	ctx: rawptr,
-}
-
-@private gclient: GameClient
+// region GameServer
+// <in game_server.odin>
 
 // region Utils
 MIN :: linalg.min
@@ -1312,11 +1207,7 @@ MAX :: linalg.max
 ABS :: linalg.abs
 
 // Some test/debug stuff
-@private YES :: "YES"
-@private NO :: "NO"
-@private DEBUG :: #config(DEBUG, NO)
-
-when DEBUG == YES {
+when NBN_DEBUG > -1 {
 	main :: proc()
 	{
 		
