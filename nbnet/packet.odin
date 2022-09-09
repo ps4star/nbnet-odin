@@ -221,7 +221,7 @@ Packet_encrypt :: proc(packet: ^Packet, connection: ^Connection)
 	assert(packet.size < PACKET_MAX_SIZE)
 
 	mem.set(mem.ptr_offset(transmute([^]u8) &packet.buffer, packet.size - added_bytes), 0, int( added_bytes ))
-	AES_CBC_encrypt_buffer(&aes, mem.ptr_offset( transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE ), bytes_to_enc)
+	AES_CBC_encrypt_buffer(&aes, mem.ptr_offset( transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE ), u32(bytes_to_enc))
 
 	log(.Trace, "Encrypted packet %d (%d bytes)", packet.header.seq_number, packet.size)
 }
@@ -235,7 +235,7 @@ Packet_decrypt :: proc(packet: ^Packet, connection: ^Connection)
 	assert(bytes_to_dec % AES_BLOCKLEN == 0)
 	assert(bytes_to_dec < PACKET_MAX_DATA_SIZE)
 
-	AES_CBC_decrypt_buffer(&aes, mem.ptr_offset(transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE), bytes_to_dec)
+	AES_CBC_decrypt_buffer(&aes, mem.ptr_offset(transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE), u32(bytes_to_dec))
 
 	log(.Trace, "Decrypted packet %d (%d bytes)", packet.header.seq_number, packet.size)
 }
@@ -248,7 +248,7 @@ Packet_compute_IV :: proc(packet: ^Packet, connection: ^Connection)
 	mem.set(DEMOTE(&packet.aes_iv), 0, AES_BLOCKLEN)
 	mem.copy(DEMOTE(&packet.aes_iv), cast(^u8) &packet.header.seq_number, size_of(packet.header.seq_number))
 
-	AES_CBC_encrypt_buffer(&aes, packet.aes_iv, AES_BLOCKLEN)
+	AES_CBC_encrypt_buffer(&aes, DEMOTE(&packet.aes_iv), AES_BLOCKLEN)
 }
 
 Packet_authenticate :: proc(packet: ^Packet, connection: ^Connection)
@@ -260,10 +260,10 @@ Packet_authenticate :: proc(packet: ^Packet, connection: ^Connection)
 	mem.zero(DEMOTE(&packet.header.auth_tag), POLY1305_TAGLEN)
 
 	d_packet_buf := DEMOTE(&packet.buffer)
-	poly1305_auth(DEMOTE(&packet.header.auth_tag),
+	poly1305_auth(&packet.header.auth_tag,
 		transmute(type_of(d_packet_buf)) mem.ptr_offset(d_packet_buf, PACKET_HEADER_SIZE),
 		packet.size + PACKET_HEADER_SIZE,
-		DEMOTE(&poly1305_key))
+		(&poly1305_key))
 }
 
 Packet_check_authentication :: proc(packet: ^Packet, connection: ^Connection) -> (bool)
@@ -274,10 +274,10 @@ Packet_check_authentication :: proc(packet: ^Packet, connection: ^Connection) ->
 	Packet_compute_poly1305_key(packet, connection, DEMOTE(&poly1305_key))
 
 	d_packet_buf := DEMOTE(&packet.buffer)
-	poly1305_auth(DEMOTE(&auth_tag),
+	poly1305_auth((&auth_tag),
 		transmute(type_of(d_packet_buf)) mem.ptr_offset(d_packet_buf, PACKET_HEADER_SIZE),
 		packet.size - PACKET_HEADER_SIZE,
-		DEMOTE(&poly1305_key))
+		(&poly1305_key))
 
 	return mem.compare_byte_ptrs(DEMOTE(&packet.header.auth_tag), DEMOTE(&auth_tag), POLY1305_TAGLEN) == 0
 }
