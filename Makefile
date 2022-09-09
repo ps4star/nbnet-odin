@@ -2,5 +2,5 @@
 # It is not needed at all for anything
 # Should probably just be excluded from the git repo completely
 test :
-	odin run nbnet.odin -file -define:DEBUG=YES
+	odin run nbnet -define:DEBUG=YES
 	rm *.bin

@@ -6,15 +6,62 @@ import "core:mem"
 import "core:os"
 import "core:time"
 
-TimeType :: time.Time
+// Some Odin compat stuff
+TimeT :: time.Time
+FileT :: os.Handle
+
+// Logging mechanism
+@(private="package")
+LogLevel :: enum {
+	Info,
+	Trace,
+	Debug,
+	Error,
+}
+
+@private LogEntry :: struct {
+	level: LogLevel,
+	msg: string,
+}
+
+@private g_logs: [dynamic]LogEntry
+
+@(private="package")
+log :: proc(level: LogLevel, fmt_s: string, args: ..any)
+{
+	out_str := fmt.aprintf(fmt_s, args)
+	append(&g_logs, LogEntry{ level = level, msg = out_str })
+	fmt.printf("%s\n", out_str)
+}
+
+// Fixed array -> ptr demotion (C-style)
+// i.e. (^)[N]T -> [^]T
+DEMOTE :: #force_inline proc(arr: ^[$N]$T, idx: int = 0) -> ([^]T)
+	where N > 0
+{
+	return transmute([^]T) &(arr^[idx])
+}
 
 // PORT BEGIN
+// (no region set)
+allocator :: mem.alloc
+reallocator :: #force_inline proc(ptr: rawptr, size: int, old_size := 1)
+{
+	mem.resize(ptr, old_size, size)
+}
+deallocator :: mem.free
+
 // region Declarations
+abort :: proc()
+{
+
+}
+
 ERROR :: -1
 
 ConnectionVector :: struct {
-	connections: []^Connection,
-	count, capacity: uint,
+	connections: [dynamic]Connection,
+	//count, capacity: uint,
 }
 
 // region MemoryManagement
@@ -206,7 +253,7 @@ BitWriter_flush_scratch_bits :: proc(bw: ^BitWriter, num_bits: uint) -> (int)
 		return ERROR
 	}
 
-	word: Word = Word(0 | (bw.scratch & ((u64(1) << num_bits) - 1)))
+	word := Word(0 | (bw.scratch & ((u64(1) << num_bits) - 1)))
 
 	mem.copy(mem.ptr_offset(bw.buffer, bw.byte_cursor), &word, int( bytes_count ))
 
@@ -307,7 +354,7 @@ ReadStream_serialize_float :: proc(rs: ^ReadStream, value: ^f32, min, max: f32, 
 {
     assert(min <= max)
 
-    mult: uint = cast(uint) math.pow_f32(f32(10), f32(precision))
+    mult := cast(uint) math.pow_f32(f32(10), f32(precision))
     i_min := int(min * f32(mult))
     i_max := int(max * f32(mult))
     i_val: int
@@ -378,7 +425,7 @@ ReadStream_serialize_bytes :: proc(rs: ^ReadStream, bytes: [^]u8, length: uint) 
 		br.scratch_bits_count = 0
 		br.scratch = 0
 
-		mem.copy(bytes, mem.ptr_offset(br.buffer, br.byte_cursor), int( length ))
+		mem.copy(bytes, mem.ptr_offset(br.buffer, br.byte_cursor), int(length))
 
 		br.byte_cursor += length
 	}
@@ -505,7 +552,7 @@ WriteStream_serialize_bytes :: proc(ws: ^WriteStream, bytes: [^]u8, length: uint
 		return ERROR
 	}
 
-	mem.copy(mem.ptr_offset(bw.buffer, bw.byte_cursor), bytes, int( length ))
+	mem.copy(mem.ptr_offset(bw.buffer, bw.byte_cursor), bytes, int(length))
 
 	return 0
 }
@@ -540,7 +587,7 @@ MeasureStream_serialize_uint :: proc(ms: ^MeasureStream, value: ^uint, min, max:
 
 	num_bits: uint = BITS_REQUIRED(min, max)
 	ms.num_bits += num_bits
-	return cast(int) num_bits
+	return int(num_bits)
 }
 
 MeasureStream_serialize_int :: proc(ms: ^MeasureStream, value: ^int, min, max: int) -> (int)
@@ -663,6 +710,7 @@ Message_serialize_data :: proc(msg: ^Message, stream: ^Stream, msg_s: MessageSer
 }
 
 // region Encryption
+// region ECDH
 NIST_B163 :: 1
 NIST_K163 :: 2
 NIST_B233 :: 3
@@ -676,7 +724,7 @@ NIST_K571 :: 10
 
 ECC_CURVE :: NIST_B233
 
-when (ECC_CURVE != 0) {
+when (ECC_CURVE > -1 && ECC_CURVE != 0) {
 	when (ECC_CURVE == NIST_K163) || (ECC_CURVE == NIST_B163) {
 		CURVE_DEGREE 		:: 163
 		ECC_PRV_KEY_SIZE 	:: 24
@@ -706,10 +754,10 @@ AES256 :: #config(AES256, -1)
 
 AES_BLOCKLEN :: 16
 
-when (AES256 == 1) {
+when (AES256 > -1 && AES256 == 1) {
     AES_KEYLEN		:: 32
     AES_keyExpSize	:: 240
-} else when (AES192 == 1) {
+} else when (AES192 > -1 && AES192 == 1) {
     AES_KEYLEN		:: 24
     AES_keyExpSize	:: 208
 } else {
@@ -731,7 +779,7 @@ CSPRNG :: rawptr
 
 CSPRNG_TYPE :: struct #raw_union {
 	object: CSPRNG,
-	urandom: os.Handle, // *FILE
+	urandom: FileT, // *FILE
 }
 
 // region Packet
@@ -815,13 +863,13 @@ Packet_init_read :: proc(packet: ^Packet, sender: ^Connection, buffer: [PACKET_M
 
 	if sender.endpoint.config.is_enc_enabled && bool(packet.header.is_enc) {
 		if !bool(sender.can_decrypt) {
-			log_error("Discard encrypted packet %d", packet.header.seq_number)
+			log(.Error, "Discard encrypted packet %d", packet.header.seq_number)
 			return ERROR
 		}
 
 		Packet_compute_IV(packet, packet.sender)
 		if !Packet_check_authentication(packet, packet.sender) {
-			log_error("Authentication check failed for packet %d", packet.header.seq_number)
+			log(.Error, "Authentication check failed for packet %d", packet.header.seq_number)
 			return ERROR
 		}
 
@@ -952,7 +1000,7 @@ Packet_encrypt :: proc(packet: ^Packet, connection: ^Connection)
 	mem.set(mem.ptr_offset(transmute([^]u8) &packet.buffer, packet.size - added_bytes), 0, int( added_bytes ))
 	AES_CBC_encrypt_buffer(&aes, mem.ptr_offset( transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE ), bytes_to_enc)
 
-	log_trace("Encrypted packet %d (%d bytes)", packet.header.seq_number, packet.size)
+	log(.Trace, "Encrypted packet %d (%d bytes)", packet.header.seq_number, packet.size)
 }
 
 Packet_decrypt :: proc(packet: ^Packet, connection: ^Connection)
@@ -966,7 +1014,7 @@ Packet_decrypt :: proc(packet: ^Packet, connection: ^Connection)
 
 	AES_CBC_decrypt_buffer(&aes, mem.ptr_offset(transmute([^]u8) &packet.buffer, PACKET_HEADER_SIZE), bytes_to_dec)
 
-	log_trace("Decrypted packet %d (%d bytes)", packet.header.seq_number, packet.size)
+	log(.Trace, "Decrypted packet %d (%d bytes)", packet.header.seq_number, packet.size)
 }
 
 Packet_compute_IV :: proc(packet: ^Packet, connection: ^Connection)
@@ -974,11 +1022,26 @@ Packet_compute_IV :: proc(packet: ^Packet, connection: ^Connection)
 	aes: AESCtx
 	AES_init_ctx_iv(&aes, connection.keys2.shared_key, connection.aes_iv)
 
-	mem.set(packet.aes_iv, 0, AES_BLOCKLEN)
-	mem.copy(packet.aes_iv, cast(^u8) &packet.header.seq_number, size_of(packet.header.seq_number))
+	mem.set(DEMOTE(&packet.aes_iv), 0, AES_BLOCKLEN)
+	mem.copy(DEMOTE(&packet.aes_iv), cast(^u8) &packet.header.seq_number, size_of(packet.header.seq_number))
 
 	AES_CBC_encrypt_buffer(&aes, packet.aes_iv, AES_BLOCKLEN)
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1058,7 +1121,7 @@ ChannelType :: enum {
 
 MessageSlot :: struct {
 	message: Message,
-	last_send_time: TimeType,
+	last_send_time: TimeT,
 	free: bool,
 }
 
@@ -1071,7 +1134,7 @@ Channel :: struct {
 	outgoing_message_count: uint,
 	chunk_count: uint,
 	last_received_chunk_id: int,
-	time: TimeType,
+	time: TimeT,
 	write_chunk_buffer: ^u8,
 	read_chunk_buffer: ^u8,
 	write_chunk_buffer_size: uint,
@@ -1122,12 +1185,12 @@ MessageEntry :: struct {
 PacketEntry :: struct {
 	acked: bool,
 	message_count: uint,
-	send_time: TimeType,
+	send_time: TimeT,
 	messages: [MAX_MESSAGES_PER_PACKET]MessageEntry,
 }
 
 ConnectionStats :: struct {
-	ping: TimeType, // TODO: may need a type change
+	ping: TimeT, // TODO: may need a type change
 	packet_loss: f32,
 	upload_bandwidth: f32,
 	download_bandwidth: f32,
@@ -1147,8 +1210,8 @@ ConnectionKeySet :: struct {
 
 Connection :: struct {
 	id, protocol_id: u32,
-	last_recv_packet_time, last_flush_time, last_read_packets_time: TimeType,
-	time: TimeType,
+	last_recv_packet_time, last_flush_time, last_read_packets_time: TimeT,
+	time: TimeT,
 	downloaded_bytes: uint,
 	is_accepted, is_stale, is_closed: u8, // default=1
 	endpoint: ^Endpoint,
@@ -1191,9 +1254,9 @@ EventQueue :: struct {
 }
 
 // region PacketSimulator
-NBN_USE_PACKET_SIMULATOR :: #config(NBN_USE_PACKET_SIMULATOR, NO)
+NBN_USE_PACKET_SIMULATOR :: #config(NBN_USE_PACKET_SIMULATOR, -1)
 
-when DEBUG == YES && USE_PACKET_SIMULATOR == YES {
+when DEBUG == YES && NBN_USE_PACKET_SIMULATOR > -1 {
 	// TODO
 	// ...
 }
